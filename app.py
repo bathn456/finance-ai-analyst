@@ -27,7 +27,7 @@ if google_api_key and pinecone_api_key:
         embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
         
         # Connect to Pinecone
-        vectorstore = PineconeVectorStore(index_name="finance-rag", embedding=embeddings)
+        vectorstore = PineconeVectorStore(index_name="ragoffinance", embedding=embeddings)
         
         # Initialize LLM (Gemini 1.5 Flash - Free & Fast)
         llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
