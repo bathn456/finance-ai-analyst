@@ -1,7 +1,7 @@
 streamlit
-langchain
-langchain-community
-langchain-core
+langchain==0.3.7
+langchain-community==0.3.7
+langchain-core==0.3.15
 langchain-google-genai
 langchain-pinecone
 pinecone-client
