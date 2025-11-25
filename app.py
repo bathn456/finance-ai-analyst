@@ -40,8 +40,8 @@ def get_vectorstore_from_pdf(pdf_docs, api_key):
 # --- MAIN STREAMLIT APPLICATION ---
 def main():
     # 1. Page Configuration and Title
-    st.set_page_config(page_title="AI Document Analyst (Real-Time RAG)", layout="wide")
-    st.title("🤖 AI Document Analyst: Chat with Your PDFs")
+    st.set_page_config(page_title="Batuhan Yilmaz's AI Analyst", layout="wide")
+    st.title("🤖 Batuhan Yilmaz's AI Document Analyst")
 
     # 2. Sidebar for Credentials and Upload
     with st.sidebar:
@@ -59,7 +59,7 @@ def main():
         )
         process_button = st.button("Submit & Process")
         st.markdown("---")
-        st.info("Built with Google Gemini, LangChain, & Streamlit.")
+        st.info("Built by Batuhan Yilmaz with Google Gemini, LangChain, & Streamlit.")
 
     # Check for API Key
     if not google_api_key:
