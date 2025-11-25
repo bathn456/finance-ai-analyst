@@ -1,17 +1,18 @@
 import streamlit as st
-import tempfile 
 import os
-import io # New import for handling file bytes
-from pypdf import PdfReader # New import for reading PDF bytes
-from langchain.text_splitter import RecursiveCharacterTextSplitter 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI 
-from langchain_community.vectorstores import FAISS # New: In-Memory Vector Store
+import io
+# Import for reading PDF bytes (pypdf is installed as a dependency)
+from pypdf import PdfReader 
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+# Google Embeddings and LLM
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+# FAISS for in-memory, session-based vector storage
+from langchain_community.vectorstores import FAISS 
 from langchain.chains import RetrievalQA
 
-# ... (API Key input unchanged) ...
-
-# --- NEW INGESTION FUNCTION ---
-def get_vectorstore_from_pdf(pdf_docs):
+# --- FUNCTION: DOCUMENT PROCESSING (Ingestion) ---
+def get_vectorstore_from_pdf(pdf_docs, api_key):
+    """Loads PDFs, extracts text, chunks it, creates embeddings, and stores in FAISS."""
     raw_text = ""
     for pdf in pdf_docs:
         # Use io.BytesIO to read the uploaded file from memory
@@ -19,57 +20,99 @@ def get_vectorstore_from_pdf(pdf_docs):
         for page in pdf_reader.pages:
             raw_text += page.extract_text()
             
-    # Split the text
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    # Split the text into chunks
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, 
+        chunk_overlap=200
+    )
     text_chunks = text_splitter.split_text(raw_text)
 
-    # Create embeddings and FAISS index
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    # Create embeddings and FAISS index (Memory)
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004", # 768 Dimensions
+        google_api_key=api_key
+    )
+    
+    # Store in FAISS in-memory index
     vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
     return vectorstore
 
+# --- MAIN STREAMLIT APPLICATION ---
 def main():
-    # ... (Page config and API key logic) ...
+    # 1. Page Configuration and Title
+    st.set_page_config(page_title="AI Document Analyst (Real-Time RAG)", layout="wide")
+    st.title("🤖 AI Document Analyst: Chat with Your PDFs")
 
-    # 🔑 Credentials & LLM setup (unchanged)
-    if not (google_api_key): # Pinecone key is not needed for FAISS
-        st.warning("Please enter your Google API key to proceed.")
-        return
-
-    # --- FILE UPLOADER UI ---
+    # 2. Sidebar for Credentials and Upload
     with st.sidebar:
-        st.header("Upload Document")
-        # Streamlit widget for file upload
+        st.header("🔑 Credentials & Documents")
+        
+        # Google API Key input
+        google_api_key = st.text_input("Google API Key", type="password")
+        
+        # File Uploader
+        st.subheader("Upload Document")
         pdf_docs = st.file_uploader(
-            "Upload your PDF Files", 
+            "Upload your PDF Files (e.g., 10-K, Report)", 
             accept_multiple_files=True, 
             type=['pdf']
         )
         process_button = st.button("Submit & Process")
+        st.markdown("---")
+        st.info("Built with Google Gemini, LangChain, & Streamlit.")
 
-    # --- PROCESSING LOGIC ---
-    if process_button and pdf_docs:
-        with st.spinner("Processing PDF and generating memory..."):
-            # This calls the function above to create the memory
-            st.session_state.vectorstore = get_vectorstore_from_pdf(pdf_docs)
-            st.success("Documents Processed! Ask a question below.")
-    
-    # --- CHAT UI ---
-    if 'vectorstore' in st.session_state:
-        # LLM setup
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+    # Check for API Key
+    if not google_api_key:
+        st.warning("Please enter your Google API key in the sidebar to begin processing documents.")
+        return
 
-        user_question = st.text_input("Ask a Question about your uploaded file:")
+    # 3. Processing Logic (Runs only on button click)
+    if process_button:
+        if pdf_docs:
+            with st.spinner("Processing PDF and generating vector index..."):
+                try:
+                    # Clear any previous index and create the new one
+                    st.session_state.vectorstore = get_vectorstore_from_pdf(pdf_docs, google_api_key)
+                    st.session_state.processing_done = True
+                    st.success("Documents Processed! Ask a question below.")
+                except Exception as e:
+                    st.error(f"Error during processing or embedding: {e}")
+                    st.session_state.processing_done = False
+        else:
+            st.error("Please upload at least one PDF file before pressing Submit.")
+
+    # 4. Chat UI (Appears only after processing is complete)
+    if 'vectorstore' in st.session_state and st.session_state.get('processing_done', False):
+        st.write("### Ask a Question about the Uploaded Material")
+        user_question = st.text_input("Enter your financial query here:")
 
         if user_question:
-            # RetrievalQA uses the FAISS index stored in session_state
-            qa_chain = RetrievalQA.from_chain_type(
-                llm=llm,
-                chain_type="stuff",
-                retriever=st.session_state.vectorstore.as_retriever(),
-            )
-            response = qa_chain.invoke({"query": user_question})
-            st.write(response["result"])
-    
+            with st.spinner("Generating accurate, context-aware answer..."):
+                # LLM setup (Fast, free-tier model)
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-2.5-flash", 
+                    temperature=0,
+                    google_api_key=google_api_key
+                )
+
+                # RetrievalQA uses the FAISS index stored in session_state
+                qa_chain = RetrievalQA.from_chain_type(
+                    llm=llm,
+                    chain_type="stuff",
+                    retriever=st.session_state.vectorstore.as_retriever(),
+                    return_source_documents=True # Get the source text for verification
+                )
+                
+                response = qa_chain.invoke({"query": user_question})
+                
+                # Display Answer
+                st.markdown(f"**Answer:** {response['result']}")
+                
+                # Display Sources
+                with st.expander("📄 See Source Documents (Evidence)"):
+                    for i, doc in enumerate(response["source_documents"]):
+                        # FAISS doesn't track pages from uploaded PDFs easily, so we just show the content
+                        st.info(f"Source Snippet {i+1}:\n{doc.page_content[:500]}...")
+
 if __name__ == '__main__':
     main()
