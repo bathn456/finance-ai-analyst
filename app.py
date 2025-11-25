@@ -1,65 +1,75 @@
 import streamlit as st
+import tempfile 
 import os
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_pinecone import PineconeVectorStore
+import io # New import for handling file bytes
+from pypdf import PdfReader # New import for reading PDF bytes
+from langchain.text_splitter import RecursiveCharacterTextSplitter 
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI 
+from langchain_community.vectorstores import FAISS # New: In-Memory Vector Store
 from langchain.chains import RetrievalQA
 
-# 1. Page Config
-st.set_page_config(page_title="AI Financial Analyst", layout="wide")
-st.title("📊 AI Financial Analyst (10-K RAG)")
+# ... (API Key input unchanged) ...
 
-# 2. Sidebar for Keys
-with st.sidebar:
-    st.header("🔑 Credentials")
-    st.info("Enter your keys to access the AI.")
-    google_api_key = st.text_input("Google API Key", type="password")
-    pinecone_api_key = st.text_input("Pinecone API Key", type="password")
-    st.markdown("---")
-    st.markdown("Built by [Your Name]")
+# --- NEW INGESTION FUNCTION ---
+def get_vectorstore_from_pdf(pdf_docs):
+    raw_text = ""
+    for pdf in pdf_docs:
+        # Use io.BytesIO to read the uploaded file from memory
+        pdf_reader = PdfReader(io.BytesIO(pdf.read()))
+        for page in pdf_reader.pages:
+            raw_text += page.extract_text()
+            
+    # Split the text
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    text_chunks = text_splitter.split_text(raw_text)
 
-# 3. Main Logic
-if google_api_key and pinecone_api_key:
-    os.environ['GOOGLE_API_KEY'] = google_api_key
-    os.environ['PINECONE_API_KEY'] = pinecone_api_key
-    
-    try:
-        # Initialize Embeddings (Must be same model as ingestion!)
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
-        
-        # Connect to Pinecone
-        vectorstore = PineconeVectorStore(index_name="ragoffinance", embedding=embeddings)
-        
-        # Initialize LLM (Gemini 1.5 Flash - Free & Fast)
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-        
-        # Create Retrieval Chain
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vectorstore.as_retriever(),
-            return_source_documents=True
+    # Create embeddings and FAISS index
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+    return vectorstore
+
+def main():
+    # ... (Page config and API key logic) ...
+
+    # 🔑 Credentials & LLM setup (unchanged)
+    if not (google_api_key): # Pinecone key is not needed for FAISS
+        st.warning("Please enter your Google API key to proceed.")
+        return
+
+    # --- FILE UPLOADER UI ---
+    with st.sidebar:
+        st.header("Upload Document")
+        # Streamlit widget for file upload
+        pdf_docs = st.file_uploader(
+            "Upload your PDF Files", 
+            accept_multiple_files=True, 
+            type=['pdf']
         )
+        process_button = st.button("Submit & Process")
 
-        # 4. Chat Interface
-        st.write("### Ask a question about the Apple 2023 10-K")
-        query = st.text_input("Example: What are the primary risk factors regarding China?")
-        
-        if query:
-            with st.spinner("Analyzing document..."):
-                response = qa_chain.invoke({"query": query})
-                
-                # Answer
-                st.success("Analysis Complete")
-                st.markdown(f"**Answer:** {response['result']}")
-                
-                # Evidence
-                with st.expander("See Source Documents"):
-                    for i, doc in enumerate(response["source_documents"]):
-                        st.write(f"**Source {i+1} (Page {doc.metadata.get('page', 'Unknown')}):**")
-                        st.info(doc.page_content)
+    # --- PROCESSING LOGIC ---
+    if process_button and pdf_docs:
+        with st.spinner("Processing PDF and generating memory..."):
+            # This calls the function above to create the memory
+            st.session_state.vectorstore = get_vectorstore_from_pdf(pdf_docs)
+            st.success("Documents Processed! Ask a question below.")
+    
+    # --- CHAT UI ---
+    if 'vectorstore' in st.session_state:
+        # LLM setup
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
-    except Exception as e:
-        st.error(f"Error connecting to AI: {e}")
+        user_question = st.text_input("Ask a Question about your uploaded file:")
 
-else:
-    st.warning("Please enter your API keys in the sidebar to start.")
+        if user_question:
+            # RetrievalQA uses the FAISS index stored in session_state
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=llm,
+                chain_type="stuff",
+                retriever=st.session_state.vectorstore.as_retriever(),
+            )
+            response = qa_chain.invoke({"query": user_question})
+            st.write(response["result"])
+    
+if __name__ == '__main__':
+    main()
