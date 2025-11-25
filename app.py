@@ -30,7 +30,7 @@ if google_api_key and pinecone_api_key:
         vectorstore = PineconeVectorStore(index_name="ragoffinance", embedding=embeddings)
         
         # Initialize LLM (Gemini 1.5 Flash - Free & Fast)
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0)
         
         # Create Retrieval Chain
         qa_chain = RetrievalQA.from_chain_type(
