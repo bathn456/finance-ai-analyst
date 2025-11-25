@@ -41,7 +41,7 @@ def get_vectorstore_from_pdf(pdf_docs, api_key):
 def main():
     # 1. Page Configuration and Title
     st.set_page_config(page_title="Batuhan Yilmaz's AI Analyst", layout="wide")
-    st.title("🤖 Batuhan Yilmaz's AI Document Analyst")
+    st.title("🤖 Batuhan Yilmaz's AI Financial Document Analyst")
 
     # 2. Sidebar for Credentials and Upload
     with st.sidebar:
