@@ -9,18 +9,20 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
-# Import the news agent functions
-# CRITICAL: Ensure news_agent.py exists in the same folder!
+# --- IMPORT NEWS AGENT (Safe Import) ---
 try:
     from news_agent import get_company_news, analyze_news_sentiment
 except ImportError:
-    st.error("CRITICAL ERROR: `news_agent.py` is missing. Please create it in your GitHub repository.")
+    st.error("CRITICAL ERROR: `news_agent.py` is missing or cannot be imported. Please create it in your GitHub repository.")
     st.stop()
 
-# --- HELPER: SEARCH TICKER ---
+# --- HELPER: ROBUST COMPANY SEARCH ---
 def search_company(query, api_key):
-    """Searches for a ticker symbol by company name using FMP API."""
-    # 1. Try Direct Search
+    """
+    Searches for a ticker symbol by company name using FMP API.
+    Includes a fallback to check if the query is already a valid ticker.
+    """
+    # Method 1: Search by Name (e.g., "Tesla")
     url = f"https://financialmodelingprep.com/api/v3/search?query={query}&limit=5&apikey={api_key}"
     try:
         response = requests.get(url).json()
@@ -29,7 +31,7 @@ def search_company(query, api_key):
     except:
         pass
 
-    # 2. Fallback: Try Direct Ticker Lookup
+    # Method 2: Fallback - Direct Ticker Lookup (e.g., "TSLA")
     try:
         url_ticker = f"https://financialmodelingprep.com/api/v3/profile/{query.upper()}?apikey={api_key}"
         response = requests.get(url_ticker).json()
@@ -50,9 +52,11 @@ def get_company_data(ticker, api_key):
         metrics = requests.get(metrics_url).json()
         profile = requests.get(profile_url).json()
         
+        # Handle cases where API returns empty lists
         metrics_data = metrics[0] if metrics else {}
         profile_data = profile[0] if profile else {}
         
+        # Merge dictionaries
         return {**metrics_data, **profile_data}
     except Exception as e:
         return None
@@ -113,7 +117,7 @@ def main():
         fmp_api_key = st.text_input("FMP API Key", type="password")
         oc_api_key = st.text_input("OpenCorporates Key (Optional)", type="password")
         st.markdown("---")
-        st.info("Enter a company name to begin analysis.")
+        st.info("Enter a company name (e.g. 'Tesla') or ticker (e.g. 'TSLA') to begin.")
 
     # Check for required keys
     if not (google_api_key and fmp_api_key):
@@ -123,7 +127,7 @@ def main():
     # 1. SEARCH SECTION
     col1, col2 = st.columns([3, 1])
     with col1:
-        search_query = st.text_input("Enter Company Name (e.g., Tesla, Turkish Airlines):")
+        search_query = st.text_input("Enter Company Name:")
     with col2:
         search_btn = st.button("Analyze Company")
 
@@ -148,7 +152,7 @@ def main():
                 # Fetch Legal Data
                 st.session_state.legal_data = get_legal_data(name, oc_api_key)
             else:
-                st.error("Company not found. Try using the exact ticker symbol.")
+                st.error("Company not found. Try using the exact ticker symbol (e.g. AAPL).")
 
     # 2. DISPLAY DASHBOARD
     if st.session_state.current_ticker and st.session_state.company_data:
@@ -168,9 +172,11 @@ def main():
             st.subheader("📈 Financial Snapshot")
             m1, m2, m3 = st.columns(3)
             m1.metric("Price", f"${data.get('price', 0)}")
+            
             pe = data.get('peRatioTTM', 0)
-            # Handle cases where P/E is None or 0
+            # Handle None/Zero PE
             if pe is None: pe = 0
+            
             m2.metric("P/E Ratio", f"{pe:.2f}")
             m3.metric("Market Cap", f"${data.get('mktCap', 0):,}")
             
