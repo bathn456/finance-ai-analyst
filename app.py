@@ -16,51 +16,50 @@ except ImportError:
     st.error("CRITICAL ERROR: `news_agent.py` is missing. Please create it in your GitHub repository.")
     st.stop()
 
-# --- HELPER: DEBUGGABLE SEARCH ---
-def search_company(query, api_key):
+# --- HELPER: SMART COMPANY SEARCH (AI-POWERED) ---
+def search_company(query, fmp_api_key, google_api_key):
     """
-    Searches for a ticker symbol by company name using FMP API.
-    Includes detailed error reporting to debug API issues.
+    Tries to find a company ticker.
+    1. Checks if the input is already a valid ticker (e.g., "TSLA").
+    2. If not, uses Gemini AI to guess the ticker from the name.
     """
-    # Method 1: Search by Name
-    url = f"https://financialmodelingprep.com/api/v3/search?query={query}&limit=5&apikey={api_key}"
+    clean_query = query.strip().upper()
+
+    # Strategy 1: Direct Ticker Check (Fastest & Free)
+    # Checks if the user entered "TSLA" or "AAPL" directly
+    url_profile = f"https://financialmodelingprep.com/api/v3/profile/{clean_query}?apikey={fmp_api_key}"
     try:
-        response = requests.get(url)
-        
-        # 1. Check for HTTP Errors (401 = Bad Key, 429 = Limit Reached)
-        if response.status_code != 200:
-            st.error(f"FMP API Error ({response.status_code}): {response.text}")
-            return None, None
-
+        response = requests.get(url_profile)
         data = response.json()
-
-        # 2. Check for API-specific error messages in JSON
-        if isinstance(data, dict) and "Error Message" in data:
-            st.error(f"FMP API Error: {data['Error Message']}")
-            return None, None
-
-        # 3. Check if data list is valid
-        if isinstance(data, list) and data:
-            return data[0]['symbol'], data[0]['name']
-
-    except Exception as e:
-        st.warning(f"Search Method 1 failed: {e}")
-
-    # Method 2: Fallback - Direct Ticker Lookup
-    try:
-        url_ticker = f"https://financialmodelingprep.com/api/v3/profile/{query.upper()}?apikey={api_key}"
-        response = requests.get(url_ticker)
-        data = response.json()
-        
-        if isinstance(data, list) and data:
-             return data[0]['symbol'], data[0]['companyName']
-    except Exception as e:
+        if isinstance(data, list) and len(data) > 0:
+            return data[0]['symbol'], data[0]['companyName']
+    except Exception:
         pass
-        
+
+    # Strategy 2: AI Lookup (Smart Search)
+    # If direct check failed, ask Gemini: "What is the ticker for 'Tesla'?"
+    if google_api_key:
+        try:
+            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=google_api_key)
+            prompt = f"What is the stock ticker symbol for the company '{query}'? Return ONLY the ticker symbol (e.g., AAPL). Do not add markdown or extra text."
+            ai_response = llm.invoke(prompt)
+            predicted_ticker = ai_response.content.strip().upper().replace("\n", "").replace(" ", "")
+            
+            # Verify the AI's prediction with FMP
+            url_verify = f"https://financialmodelingprep.com/api/v3/profile/{predicted_ticker}?apikey={fmp_api_key}"
+            response = requests.get(url_verify)
+            data = response.json()
+            if isinstance(data, list) and len(data) > 0:
+                return data[0]['symbol'], data[0]['companyName']
+        except Exception as e:
+            print(f"AI Search failed: {e}")
+            pass
+
     return None, None
 
 # --- HELPER: GET FINANCIAL DATA ---
 def get_company_data(ticker, api_key):
+    """Fetches key metrics and profile data from FMP."""
     metrics_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={api_key}"
     profile_url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
     
@@ -77,6 +76,7 @@ def get_company_data(ticker, api_key):
 
 # --- HELPER: GET LEGAL DATA ---
 def get_legal_data(company_name, api_key):
+    """Fetches legal registration data from OpenCorporates."""
     if api_key:
         url = f"https://api.opencorporates.com/v0.4/companies/search?q={company_name}&api_token={api_key}"
     else:
@@ -101,6 +101,7 @@ def get_legal_data(company_name, api_key):
 
 # --- HELPER: PDF PROCESSING ---
 def process_pdf(pdf_docs, api_key):
+    """Reads, chunks, and embeds uploaded PDFs into a FAISS vector store."""
     raw_text = ""
     for pdf in pdf_docs:
         pdf_reader = PdfReader(io.BytesIO(pdf.read()))
@@ -122,7 +123,7 @@ def main():
     st.set_page_config(page_title="Batuhan's Financial Deck", layout="wide")
     st.title("📊 AI Financial Analyst Dashboard")
 
-    # Sidebar
+    # Sidebar for Keys
     with st.sidebar:
         st.header("🔑 API Keys")
         google_api_key = st.text_input("Google API Key", type="password")
@@ -131,6 +132,7 @@ def main():
         st.markdown("---")
         st.info("Enter a company name (e.g. 'Tesla') or ticker (e.g. 'TSLA') to begin.")
 
+    # Check for required keys
     if not (google_api_key and fmp_api_key):
         st.warning("Please enter Google and FMP API keys to start.")
         return
@@ -152,16 +154,18 @@ def main():
     # Logic: Execute Search
     if search_btn and search_query:
         with st.spinner(f"Searching markets for '{search_query}'..."):
-            ticker, name = search_company(search_query, fmp_api_key)
+            # Updated Search Function passing both keys
+            ticker, name = search_company(search_query, fmp_api_key, google_api_key)
             
             if ticker:
                 st.session_state.current_ticker = ticker
                 st.session_state.current_name = name
+                # Fetch Financials
                 st.session_state.company_data = get_company_data(ticker, fmp_api_key)
+                # Fetch Legal Data
                 st.session_state.legal_data = get_legal_data(name, oc_api_key)
             else:
-                # Error message is handled inside search_company now
-                st.error("Could not resolve company. See error details above.")
+                st.error(f"Could not find '{search_query}'. Try using the exact ticker symbol (e.g. TSLA).")
 
     # 2. DISPLAY DASHBOARD
     if st.session_state.current_ticker and st.session_state.company_data:
@@ -207,7 +211,7 @@ def main():
                 if legal.get('source_url'):
                     st.markdown(f"[View Official Record]({legal['source_url']})")
             else:
-                st.warning("No legal record found in OpenCorporates.")
+                st.warning("No legal record found.")
 
         st.markdown("---")
 
