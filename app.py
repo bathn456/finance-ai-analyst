@@ -1,118 +1,218 @@
 import streamlit as st
 import os
 import io
-# Import for reading PDF bytes (pypdf is installed as a dependency)
+import requests
 from pypdf import PdfReader 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-# Google Embeddings and LLM
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-# FAISS for in-memory, session-based vector storage
 from langchain_community.vectorstores import FAISS 
 from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+# Import the news agent functions
+from news_agent import get_company_news, analyze_news_sentiment
 
-# --- FUNCTION: DOCUMENT PROCESSING (Ingestion) ---
-def get_vectorstore_from_pdf(pdf_docs, api_key):
-    """Loads PDFs, extracts text, chunks it, creates embeddings, and stores in FAISS."""
+# --- HELPER: SEARCH TICKER ---
+def search_company(query, api_key):
+    url = f"https://financialmodelingprep.com/api/v3/search?query={query}&limit=1&apikey={api_key}"
+    try:
+        response = requests.get(url).json()
+        if response:
+            return response[0]['symbol'], response[0]['name']
+        return None, None
+    except:
+        return None, None
+
+# --- HELPER: GET DATA ---
+def get_company_data(ticker, api_key):
+    metrics_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={api_key}"
+    profile_url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
+    try:
+        metrics = requests.get(metrics_url).json()
+        profile = requests.get(profile_url).json()
+        if metrics and profile:
+            return {**metrics[0], **profile[0]}
+        return None
+    except:
+        return None
+
+# --- HELPER: GET LEGAL DATA ---
+def get_legal_data(company_name, api_key):
+    if api_key:
+        url = f"https://api.opencorporates.com/v0.4/companies/search?q={company_name}&api_token={api_key}"
+    else:
+        url = f"https://api.opencorporates.com/v0.4/companies/search?q={company_name}"
+    try:
+        response = requests.get(url).json()
+        if response.get('results', {}).get('companies'):
+            company = response['results']['companies'][0]['company']
+            return {
+                "name": company.get('name'),
+                "number": company.get('company_number'),
+                "jurisdiction": company.get('jurisdiction_code'),
+                "address": company.get('registered_address_in_full'),
+                "incorporation_date": company.get('incorporation_date'),
+                "status": company.get('current_status'),
+                "source_url": company.get('opencorporates_url')
+            }
+        return None
+    except:
+        return None
+
+# --- HELPER: PDF PROCESSING ---
+def process_pdf(pdf_docs, api_key):
     raw_text = ""
     for pdf in pdf_docs:
-        # Use io.BytesIO to read the uploaded file from memory
         pdf_reader = PdfReader(io.BytesIO(pdf.read()))
         for page in pdf_reader.pages:
             raw_text += page.extract_text()
-            
-    # Split the text into chunks
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, 
-        chunk_overlap=200
-    )
-    text_chunks = text_splitter.split_text(raw_text)
-
-    # Create embeddings and FAISS index (Memory)
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004", # 768 Dimensions
-        google_api_key=api_key
-    )
-    
-    # Store in FAISS in-memory index
-    vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunks = text_splitter.split_text(raw_text)
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
+    vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings)
     return vectorstore
 
-# --- MAIN STREAMLIT APPLICATION ---
+# --- MAIN APP ---
 def main():
-    # 1. Page Configuration and Title
-    st.set_page_config(page_title="Batuhan Yilmaz's AI Analyst", layout="wide")
-    st.title("🤖 Batuhan Yilmaz's AI Financial Document Analyst")
+    st.set_page_config(page_title="Batuhan's Financial Deck", layout="wide")
+    st.title("📊 AI Financial Analyst Dashboard")
 
-    # 2. Sidebar for Credentials and Upload
     with st.sidebar:
-        st.header("🔑 Credentials & Documents")
-        
-        # Google API Key input
+        st.header("🔑 API Keys")
         google_api_key = st.text_input("Google API Key", type="password")
-        
-        # File Uploader
-        st.subheader("Upload Document")
-        pdf_docs = st.file_uploader(
-            "Upload your PDF Files (e.g., 10-K, Report)", 
-            accept_multiple_files=True, 
-            type=['pdf']
-        )
-        process_button = st.button("Submit & Process")
+        fmp_api_key = st.text_input("FMP API Key", type="password")
+        oc_api_key = st.text_input("OpenCorporates Key (Optional)", type="password")
         st.markdown("---")
-        st.info("Built by Batuhan Yilmaz with Google Gemini, LangChain, & Streamlit.")
+        st.info("Enter a company name to begin.")
 
-    # Check for API Key
-    if not google_api_key:
-        st.warning("Please enter your Google API key in the sidebar to begin processing documents.")
+    if not (google_api_key and fmp_api_key):
+        st.warning("Please enter Google and FMP API keys.")
         return
 
-    # 3. Processing Logic (Runs only on button click)
-    if process_button:
-        if pdf_docs:
-            with st.spinner("Processing PDF and generating vector index..."):
-                try:
-                    # Clear any previous index and create the new one
-                    st.session_state.vectorstore = get_vectorstore_from_pdf(pdf_docs, google_api_key)
-                    st.session_state.processing_done = True
-                    st.success("Documents Processed! Ask a question below.")
-                except Exception as e:
-                    st.error(f"Error during processing or embedding: {e}")
-                    st.session_state.processing_done = False
-        else:
-            st.error("Please upload at least one PDF file before pressing Submit.")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_query = st.text_input("Enter Company Name:")
+    with col2:
+        search_btn = st.button("Analyze Company")
 
-    # 4. Chat UI (Appears only after processing is complete)
-    if 'vectorstore' in st.session_state and st.session_state.get('processing_done', False):
-        st.write("### Ask a Question about the Uploaded Material")
-        user_question = st.text_input("Enter your financial query here:")
+    if 'current_ticker' not in st.session_state:
+        st.session_state.current_ticker = None
+        st.session_state.current_name = None
+        st.session_state.company_data = None
+        st.session_state.legal_data = None
 
-        if user_question:
-            with st.spinner("Generating accurate, context-aware answer..."):
-                # LLM setup (Fast, free-tier model)
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-2.5-flash", 
-                    temperature=0,
-                    google_api_key=google_api_key
-                )
+    if search_btn and search_query:
+        with st.spinner(f"Searching markets for '{search_query}'..."):
+            ticker, name = search_company(search_query, fmp_api_key)
+            if ticker:
+                st.session_state.current_ticker = ticker
+                st.session_state.current_name = name
+                st.session_state.company_data = get_company_data(ticker, fmp_api_key)
+                st.session_state.legal_data = get_legal_data(name, oc_api_key)
+            else:
+                st.error("Company not found.")
 
-                # RetrievalQA uses the FAISS index stored in session_state
-                qa_chain = RetrievalQA.from_chain_type(
-                    llm=llm,
-                    chain_type="stuff",
-                    retriever=st.session_state.vectorstore.as_retriever(),
-                    return_source_documents=True # Get the source text for verification
-                )
+    if st.session_state.current_ticker and st.session_state.company_data:
+        data = st.session_state.company_data
+        legal = st.session_state.legal_data
+        name = st.session_state.current_name
+        ticker = st.session_state.current_ticker
+
+        st.markdown(f"## 🏢 {name} ({ticker})")
+        
+        # --- METRICS & VALUATION CHECK ---
+        col_metrics, col_legal = st.columns([2, 1])
+        with col_metrics:
+            st.subheader("📈 Financial Snapshot")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Price", f"${data.get('price', 0)}")
+            pe = data.get('peRatioTTM', 0)
+            m2.metric("P/E Ratio", f"{pe:.2f}")
+            m3.metric("Market Cap", f"${data.get('mktCap', 0):,}")
+            
+            # Simple Heuristic Valuation Logic
+            valuation_status = "Neutral"
+            if pe > 0:
+                if pe < 15:
+                    st.success("✅ Potentially Undervalued (Low P/E)")
+                    valuation_status = "Undervalued"
+                elif pe > 30:
+                    st.error("⚠️ Potentially Overvalued (High P/E)")
+                    valuation_status = "Overvalued"
+                else:
+                    st.info("⚖️ Fairly Valued (Average P/E)")
+                    valuation_status = "Fairly Valued"
+
+        with col_legal:
+            st.subheader("⚖️ Legal Identity")
+            if legal:
+                st.write(f"**Jurisdiction:** {legal['jurisdiction'].upper()}")
+                st.write(f"**Incorporated:** {legal['incorporation_date']}")
+                st.write(f"**Status:** {legal['status']}")
+                st.markdown(f"[View Official Record]({legal['source_url']})")
+            else:
+                st.warning("No legal record found.")
+
+        st.markdown("---")
+
+        # --- AI COMPREHENSIVE VALUATION (The New Feature) ---
+        st.subheader("🧠 AI Strategic Valuation")
+        if st.button("Generate Comprehensive Analysis"):
+            with st.spinner("Gathering intelligence (Financials + News)..."):
+                # 1. Fetch News
+                news_list = get_company_news(ticker)
+                news_text = "\n".join(news_list) if news_list else "No recent news found."
                 
-                response = qa_chain.invoke({"query": user_question})
+                # 2. Build the Master Prompt
+                llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.7, google_api_key=google_api_key)
                 
-                # Display Answer
-                st.markdown(f"**Answer:** {response['result']}")
+                analysis_prompt = f"""
+                You are a senior hedge fund manager. Perform a comprehensive valuation analysis for **{name} ({ticker})**.
                 
-                # Display Sources
-                with st.expander("📄 See Source Documents (Evidence)"):
-                    for i, doc in enumerate(response["source_documents"]):
-                        # FAISS doesn't track pages from uploaded PDFs easily, so we just show the content
-                        st.info(f"Source Snippet {i+1}:\n{doc.page_content[:500]}...")
+                **Data Source 1: Quantitative Financials**
+                - P/E Ratio: {pe} (Sector Average is approx 20-25)
+                - Market Cap: ${data.get('mktCap', 0):,}
+                - Current Price: ${data.get('price', 0)}
+                
+                **Data Source 2: Qualitative Market Sentiment (Recent News)**
+                {news_text}
+                
+                **Task:**
+                1. Synthesize the financial metrics with the news sentiment.
+                2. Determine if the company appears **Undervalued**, **Overvalued**, or **Fairly Valued**.
+                3. Explain your reasoning clearly. Does the news justify the current P/E ratio?
+                """
+                
+                res = llm.invoke(analysis_prompt)
+                st.write(res.content)
+
+        st.markdown("---")
+
+        # --- PDF CHAT ---
+        st.subheader(f"📄 Chat with {ticker}'s Annual Report")
+        pdf_docs = st.file_uploader("Upload PDF", accept_multiple_files=True, key="pdf_uploader")
+        
+        if st.button("Process Documents"):
+            if pdf_docs:
+                with st.spinner("Processing..."):
+                    st.session_state.vectorstore = process_pdf(pdf_docs, google_api_key)
+                    st.success("Ready!")
+            else:
+                st.error("Upload a file first.")
+
+        if 'vectorstore' in st.session_state:
+            user_question = st.text_input(f"Ask a question about {name}:")
+            if user_question:
+                llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=google_api_key)
+                template = f"""
+                You are a financial analyst analyzing **{name} ({ticker})**.
+                Legal Context: Incorporated {legal.get('incorporation_date') if legal else 'N/A'} in {legal.get('jurisdiction') if legal else 'N/A'}.
+                Use the context below to answer.
+                Context: {{context}}
+                Question: {{question}}
+                """
+                PROMPT = PromptTemplate(template=template, input_variables=["context", "question"])
+                qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=st.session_state.vectorstore.as_retriever(), chain_type_kwargs={"prompt": PROMPT})
+                st.write(qa.invoke({"query": user_question})["result"])
 
 if __name__ == '__main__':
     main()
