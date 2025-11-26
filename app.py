@@ -9,42 +9,58 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
-# --- IMPORT NEWS AGENT (Safe Import) ---
+# --- IMPORT NEWS AGENT ---
 try:
     from news_agent import get_company_news, analyze_news_sentiment
 except ImportError:
-    st.error("CRITICAL ERROR: `news_agent.py` is missing or cannot be imported. Please create it in your GitHub repository.")
+    st.error("CRITICAL ERROR: `news_agent.py` is missing. Please create it in your GitHub repository.")
     st.stop()
 
-# --- HELPER: ROBUST COMPANY SEARCH ---
+# --- HELPER: DEBUGGABLE SEARCH ---
 def search_company(query, api_key):
     """
     Searches for a ticker symbol by company name using FMP API.
-    Includes a fallback to check if the query is already a valid ticker.
+    Includes detailed error reporting to debug API issues.
     """
-    # Method 1: Search by Name (e.g., "Tesla")
+    # Method 1: Search by Name
     url = f"https://financialmodelingprep.com/api/v3/search?query={query}&limit=5&apikey={api_key}"
     try:
-        response = requests.get(url).json()
-        if response:
-            return response[0]['symbol'], response[0]['name']
-    except:
-        pass
+        response = requests.get(url)
+        
+        # 1. Check for HTTP Errors (401 = Bad Key, 429 = Limit Reached)
+        if response.status_code != 200:
+            st.error(f"FMP API Error ({response.status_code}): {response.text}")
+            return None, None
 
-    # Method 2: Fallback - Direct Ticker Lookup (e.g., "TSLA")
+        data = response.json()
+
+        # 2. Check for API-specific error messages in JSON
+        if isinstance(data, dict) and "Error Message" in data:
+            st.error(f"FMP API Error: {data['Error Message']}")
+            return None, None
+
+        # 3. Check if data list is valid
+        if isinstance(data, list) and data:
+            return data[0]['symbol'], data[0]['name']
+
+    except Exception as e:
+        st.warning(f"Search Method 1 failed: {e}")
+
+    # Method 2: Fallback - Direct Ticker Lookup
     try:
         url_ticker = f"https://financialmodelingprep.com/api/v3/profile/{query.upper()}?apikey={api_key}"
-        response = requests.get(url_ticker).json()
-        if response:
-             return response[0]['symbol'], response[0]['companyName']
-    except:
+        response = requests.get(url_ticker)
+        data = response.json()
+        
+        if isinstance(data, list) and data:
+             return data[0]['symbol'], data[0]['companyName']
+    except Exception as e:
         pass
         
     return None, None
 
 # --- HELPER: GET FINANCIAL DATA ---
 def get_company_data(ticker, api_key):
-    """Fetches key metrics and profile data from FMP."""
     metrics_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={api_key}"
     profile_url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={api_key}"
     
@@ -52,18 +68,15 @@ def get_company_data(ticker, api_key):
         metrics = requests.get(metrics_url).json()
         profile = requests.get(profile_url).json()
         
-        # Handle cases where API returns empty lists
-        metrics_data = metrics[0] if metrics else {}
-        profile_data = profile[0] if profile else {}
+        metrics_data = metrics[0] if isinstance(metrics, list) and metrics else {}
+        profile_data = profile[0] if isinstance(profile, list) and profile else {}
         
-        # Merge dictionaries
         return {**metrics_data, **profile_data}
-    except Exception as e:
+    except:
         return None
 
 # --- HELPER: GET LEGAL DATA ---
 def get_legal_data(company_name, api_key):
-    """Fetches legal registration data from OpenCorporates."""
     if api_key:
         url = f"https://api.opencorporates.com/v0.4/companies/search?q={company_name}&api_token={api_key}"
     else:
@@ -88,7 +101,6 @@ def get_legal_data(company_name, api_key):
 
 # --- HELPER: PDF PROCESSING ---
 def process_pdf(pdf_docs, api_key):
-    """Reads, chunks, and embeds uploaded PDFs into a FAISS vector store."""
     raw_text = ""
     for pdf in pdf_docs:
         pdf_reader = PdfReader(io.BytesIO(pdf.read()))
@@ -110,7 +122,7 @@ def main():
     st.set_page_config(page_title="Batuhan's Financial Deck", layout="wide")
     st.title("📊 AI Financial Analyst Dashboard")
 
-    # Sidebar for Keys
+    # Sidebar
     with st.sidebar:
         st.header("🔑 API Keys")
         google_api_key = st.text_input("Google API Key", type="password")
@@ -119,7 +131,6 @@ def main():
         st.markdown("---")
         st.info("Enter a company name (e.g. 'Tesla') or ticker (e.g. 'TSLA') to begin.")
 
-    # Check for required keys
     if not (google_api_key and fmp_api_key):
         st.warning("Please enter Google and FMP API keys to start.")
         return
@@ -141,18 +152,16 @@ def main():
     # Logic: Execute Search
     if search_btn and search_query:
         with st.spinner(f"Searching markets for '{search_query}'..."):
-            # Search for Ticker
             ticker, name = search_company(search_query, fmp_api_key)
             
             if ticker:
                 st.session_state.current_ticker = ticker
                 st.session_state.current_name = name
-                # Fetch Financials
                 st.session_state.company_data = get_company_data(ticker, fmp_api_key)
-                # Fetch Legal Data
                 st.session_state.legal_data = get_legal_data(name, oc_api_key)
             else:
-                st.error("Company not found. Try using the exact ticker symbol (e.g. AAPL).")
+                # Error message is handled inside search_company now
+                st.error("Could not resolve company. See error details above.")
 
     # 2. DISPLAY DASHBOARD
     if st.session_state.current_ticker and st.session_state.company_data:
@@ -165,7 +174,7 @@ def main():
         st.markdown(f"## 🏢 {name} ({ticker})")
         st.markdown(f"*{data.get('description', 'No description available')[:300]}...*")
         
-        # --- METRICS & VALUATION CHECK ---
+        # --- METRICS ---
         col_metrics, col_legal = st.columns([2, 1])
         
         with col_metrics:
@@ -174,13 +183,11 @@ def main():
             m1.metric("Price", f"${data.get('price', 0)}")
             
             pe = data.get('peRatioTTM', 0)
-            # Handle None/Zero PE
             if pe is None: pe = 0
             
             m2.metric("P/E Ratio", f"{pe:.2f}")
             m3.metric("Market Cap", f"${data.get('mktCap', 0):,}")
             
-            # Simple Valuation Logic
             if pe > 0:
                 if pe < 15:
                     st.success("✅ Potentially Undervalued (Low P/E)")
@@ -208,11 +215,9 @@ def main():
         st.subheader("🧠 AI Strategic Valuation")
         if st.button("Generate Comprehensive Analysis"):
             with st.spinner("Gathering intelligence (Financials + News)..."):
-                # 1. Fetch News using the agent
                 news_list = get_company_news(ticker)
                 news_text = "\n".join(news_list) if news_list else "No recent news found."
                 
-                # 2. Build the Master Prompt
                 llm = ChatGoogleGenerativeAI(
                     model="gemini-2.5-flash", 
                     temperature=0.7, 
@@ -265,7 +270,6 @@ def main():
                     google_api_key=google_api_key
                 )
                 
-                # Create prompt with legal context if available
                 legal_context = ""
                 if legal:
                     legal_context = f"Legal Context: Incorporated {legal.get('incorporation_date')} in {legal.get('jurisdiction')}."
