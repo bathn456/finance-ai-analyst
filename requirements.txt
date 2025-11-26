@@ -7,3 +7,5 @@ langchain-pinecone
 pinecone-client
 pypdf
 faiss-cpu
+requests
+yfinance
