@@ -1,1 +1,1 @@
-https://ai-financial-analyst.streamlit.app/
+https://finance-ai-analyst-batuhanyilmaz.streamlit.app/
